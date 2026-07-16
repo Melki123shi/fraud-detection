@@ -285,3 +285,44 @@ Based on the EDA and feature engineering work, the following insights will guide
 4. **PCA features V14, V17, V12, V10** are the most predictive in the credit card dataset.
 5. **Extreme class imbalance** (especially in creditcard.csv at 0.17% fraud) necessitates metrics beyond accuracy — AUC-PR, F1-score, and confusion matrices will be essential.
 6. **SMOTE on training data only** ensures valid evaluation on untouched test sets.
+
+---
+
+## 11. Testing
+
+### 11.1 Test Infrastructure
+
+- **Framework:** pytest
+- **Test file:** `tests/test_data_processing.py`
+- **CI command:** `pytest tests/ -v` (run via `.github/workflows/ci.yml`)
+- **Linting:** `flake8 src/ tests/` enforced in CI
+
+### 11.2 Test Coverage
+
+59 tests across 17 test classes covering all functions in `src/data_processing.py`:
+
+| Category | Functions | Tests |
+|----------|-----------|-------|
+| Utilities | `_ensure_dir` | 2 |
+| Loading | `load_data` | 2 |
+| Basic Checks | `check_missing_values`, `check_duplicates`, `check_outliers` | 8 |
+| Cleaning | `correct_data_types`, `handle_cleaning`, `save_cleaned_data` | 6 |
+| IP Mapping | `map_ip_to_country`, `prepare_ip_ranges`, `add_ip_country`, `add_country_risk_features`, `get_fraud_by_country` | 10 |
+| Temporal Features | `categorize_hour`, `engineer_temporal_features` | 6 |
+| Velocity Features | `engineer_velocity_features` | 5 |
+| EDA Helpers | `get_class_distribution`, `get_fraud_rate_by_column` | 4 |
+| Encoding | `encode_categoricals` | 3 |
+| Scaling & Splitting | `scale_features`, `stratified_split`, `apply_smote` | 5 |
+
+### 11.3 Running Tests Locally
+
+```bash
+# Run all tests
+pytest tests/ -v
+
+# Run tests for a specific class
+pytest tests/test_data_processing.py::TestCategorizeHour -v
+
+# Run with coverage report
+pytest tests/ --cov=src --cov-report=term-missing
+```
