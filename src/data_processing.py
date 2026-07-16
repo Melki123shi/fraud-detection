@@ -137,7 +137,11 @@ def add_country_risk_features(df, min_transactions=100, top_n=10):
     stats = df.groupby("country")["class"].agg(["mean", "count"])
     stats.columns = ["fraud_rate", "total_transactions"]
     significant = stats[stats["total_transactions"] >= min_transactions]
-    high_risk = significant.sort_values("fraud_rate", ascending=False).head(top_n).index.tolist()
+    significant_sorted_value = significant.sort_values(
+        "fraud_rate",
+        ascending=False,
+    )
+    high_risk = significant_sorted_value.head(top_n).index.tolist()
     df = df.copy()
     df["is_high_risk_country"] = df["country"].isin(high_risk).astype(int)
     df["is_unknown_country"] = (df["country"] == "Unknown").astype(int)
@@ -166,21 +170,25 @@ def categorize_hour(hour):
     return "evening"
 
 
-def engineer_temporal_features(df, signup_col="signup_time", purchase_col="purchase_time"):
+def engineer_temporal_features(
+    df, signup_col="signup_time", purchase_col="purchase_time"
+):
     df = df.copy()
     df["signup_hour"] = df[signup_col].dt.hour
     df["signup_day"] = df[signup_col].dt.day_name()
     df["signup_month"] = df[signup_col].dt.month
-    df["signup_is_weekend"] = df[signup_col].dt.dayofweek.isin([5, 6]).astype(int)
+    is_weekend = df[signup_col].dt.dayofweek.isin([5, 6])
+    df["signup_is_weekend"] = is_weekend.astype(int)
 
     df["purchase_hour"] = df[purchase_col].dt.hour
     df["purchase_day"] = df[purchase_col].dt.day_name()
     df["purchase_month"] = df[purchase_col].dt.month
-    df["purchase_is_weekend"] = df[purchase_col].dt.dayofweek.isin([5, 6]).astype(int)
+    is_weekend = df[purchase_col].dt.dayofweek.isin([5, 6])
+    df["purchase_is_weekend"] = is_weekend.astype(int)
 
     df["time_since_signup"] = (
-        (df[purchase_col] - df[signup_col]).dt.total_seconds() / 3600
-    )
+        df[purchase_col] - df[signup_col]
+    ).dt.total_seconds() / 3600
     df["hour_of_day"] = df[purchase_col].dt.hour
     df["day_of_week"] = df[purchase_col].dt.day_name()
     df["time_of_day"] = df["hour_of_day"].apply(categorize_hour)
@@ -190,14 +198,26 @@ def engineer_temporal_features(df, signup_col="signup_time", purchase_col="purch
 # ---------------------------------------------------------------------------
 # Velocity features
 # ---------------------------------------------------------------------------
-def engineer_velocity_features(df, user_col="user_id", device_col="device_id", target_col="class"):
+def engineer_velocity_features(
+    df, user_col="user_id", device_col="device_id", target_col="class"
+):
     df = df.copy()
-    df["user_total_transactions"] = df.groupby(user_col)[user_col].transform("count")
-    df["device_total_transactions"] = df.groupby(device_col)[device_col].transform("count")
-    df["user_historical_fraud_rate"] = df.groupby(user_col)[target_col].transform("mean")
-    df["device_historical_fraud_rate"] = df.groupby(device_col)[target_col].transform("mean")
-    df["users_per_device"] = df.groupby(device_col)[user_col].transform("nunique")
-    df["devices_per_user"] = df.groupby(user_col)[device_col].transform("nunique")
+    df["user_total_transactions"] = (
+        df.groupby(user_col)[user_col].transform("count")
+    )
+    df["device_total_transactions"] = (
+        df.groupby(device_col)[device_col].transform("count")
+    )
+    df["user_historical_fraud_rate"] = (
+        df.groupby(user_col)[target_col].transform("mean")
+    )
+    df["device_historical_fraud_rate"] = (
+        df.groupby(device_col)[target_col].transform("mean")
+    )
+    df_group_device = df.groupby(device_col)[user_col]
+    df_group_user = df.groupby(user_col)[device_col]
+    df["users_per_device"] = df_group_device.transform("nunique")
+    df["devices_per_user"] = df_group_user.transform("nunique")
 
     if "purchase_time" in df.columns:
         df = df.sort_values([user_col, "purchase_time"])
@@ -232,7 +252,7 @@ def get_class_distribution(y, name=""):
         dist[cls] = {"count": count, "percentage": pct}
         print(f"  Class {cls}: {count:,} ({pct:.2f}%)")
     if len(unique) == 2:
-        print(f"  Imbalance Ratio: {counts[0]/counts[1]:.1f}:1")
+        print(f"  Imbalance Ratio: {counts[0] / counts[1]:.1f}:1")
     return dist
 
 
@@ -263,11 +283,16 @@ def scale_features(X_train, X_test, columns):
 
 
 def stratified_split(X, y, test_size=0.2, random_state=42):
-    return train_test_split(X, y, test_size=test_size, random_state=random_state, stratify=y)
+    return train_test_split(
+        X, y, test_size=test_size, random_state=random_state, stratify=y
+    )
 
 
 def apply_smote(X_train, y_train, sampling_strategy=0.5, random_state=42):
-    smote = SMOTE(random_state=random_state, sampling_strategy=sampling_strategy)
+    smote = SMOTE(
+        random_state=random_state,
+        sampling_strategy=sampling_strategy,
+    )
     X_res, y_res = smote.fit_resample(X_train, y_train)
     return X_res, y_res
 
@@ -341,11 +366,26 @@ def process_creditcard_data():
     return df
 
 
-def prepare_modeling_data_fraud(df, target_col="class", test_size=0.2, smote_ratio=0.5):
+def prepare_modeling_data_fraud(
+    df,
+    target_col="class",
+    test_size=0.2,
+    smote_ratio=0.5,
+):
     exclude_cols = [
-        "user_id", "signup_time", "purchase_time", "device_id", "ip_address",
-        "ip_address_int", "country", target_col, "signup_day", "purchase_day",
-        "time_of_day", "hour_of_day", "day_of_week",
+        "user_id",
+        "signup_time",
+        "purchase_time",
+        "device_id",
+        "ip_address",
+        "ip_address_int",
+        "country",
+        target_col,
+        "signup_day",
+        "purchase_day",
+        "time_of_day",
+        "hour_of_day",
+        "day_of_week",
     ]
     feature_cols = [c for c in df.columns if c not in exclude_cols]
 
@@ -361,13 +401,23 @@ def prepare_modeling_data_fraud(df, target_col="class", test_size=0.2, smote_rat
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size)
 
     numerical_cols = [
-        c for c in [
-            "purchase_value", "age", "time_since_signup",
-            "user_total_transactions", "device_total_transactions",
-            "user_historical_fraud_rate", "device_historical_fraud_rate",
-            "users_per_device", "devices_per_user",
-            "signup_hour", "purchase_hour", "signup_month", "purchase_month",
-        ] if c in X_train.columns
+        c
+        for c in [
+            "purchase_value",
+            "age",
+            "time_since_signup",
+            "user_total_transactions",
+            "device_total_transactions",
+            "user_historical_fraud_rate",
+            "device_historical_fraud_rate",
+            "users_per_device",
+            "devices_per_user",
+            "signup_hour",
+            "purchase_hour",
+            "signup_month",
+            "purchase_month",
+        ]
+        if c in X_train.columns
     ]
     X_train, X_test, scaler = scale_features(X_train, X_test, numerical_cols)
 
@@ -375,10 +425,18 @@ def prepare_modeling_data_fraud(df, target_col="class", test_size=0.2, smote_rat
 
     _ensure_dir(DATA_PROCESSED)
     for name, obj in [
-        ("X_train_fraud", X_train), ("X_test_fraud", X_test),
-        ("y_train_fraud", y_train), ("y_test_fraud", y_test),
-        ("X_train_fraud_smote", pd.DataFrame(X_train_smote, columns=feature_cols)),
-        ("y_train_fraud_smote", pd.Series(y_train_smote)),
+        ("X_train_fraud", X_train),
+        ("X_test_fraud", X_test),
+        ("y_train_fraud", y_train),
+        ("y_test_fraud", y_test),
+        (
+            "X_train_fraud_smote",
+            pd.DataFrame(X_train_smote, columns=feature_cols),
+        ),
+        (
+            "y_train_fraud_smote",
+            pd.Series(y_train_smote),
+        ),
     ]:
         if isinstance(obj, pd.DataFrame):
             obj.to_csv(DATA_PROCESSED / f"{name}.csv", index=False)
@@ -387,10 +445,20 @@ def prepare_modeling_data_fraud(df, target_col="class", test_size=0.2, smote_rat
 
     print(f"\nTrain: {X_train.shape}, Test: {X_test.shape}")
     print(f"After SMOTE: {X_train_smote.shape}")
-    return X_train, X_test, y_train, y_test, X_train_smote, y_train_smote, feature_cols
+    return (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        X_train_smote,
+        y_train_smote,
+        feature_cols,
+    )
 
 
-def prepare_modeling_data_credit(df, target_col="Class", test_size=0.2, smote_ratio=0.3):
+def prepare_modeling_data_credit(
+    df, target_col="Class", test_size=0.2, smote_ratio=0.3
+):
     v_cols = [f"V{i}" for i in range(1, 29)]
     feature_cols = v_cols + ["Amount_log", "Time_hours"]
 
@@ -399,16 +467,26 @@ def prepare_modeling_data_credit(df, target_col="Class", test_size=0.2, smote_ra
 
     X_train, X_test, y_train, y_test = stratified_split(X, y, test_size)
 
-    X_train, X_test, scaler = scale_features(X_train, X_test, ["Amount_log", "Time_hours"])
+    X_train, X_test, scaler = scale_features(
+        X_train, X_test, ["Amount_log", "Time_hours"]
+    )
 
     X_train_smote, y_train_smote = apply_smote(X_train, y_train, smote_ratio)
 
     _ensure_dir(DATA_PROCESSED)
     for name, obj in [
-        ("X_train_credit", X_train), ("X_test_credit", X_test),
-        ("y_train_credit", y_train), ("y_test_credit", y_test),
-        ("X_train_credit_smote", pd.DataFrame(X_train_smote, columns=feature_cols)),
-        ("y_train_credit_smote", pd.Series(y_train_smote)),
+        ("X_train_credit", X_train),
+        ("X_test_credit", X_test),
+        ("y_train_credit", y_train),
+        ("y_test_credit", y_test),
+        (
+            "X_train_credit_smote",
+            pd.DataFrame(X_train_smote, columns=feature_cols),
+        ),
+        (
+            "y_train_credit_smote",
+            pd.Series(y_train_smote),
+        ),
     ]:
         if isinstance(obj, pd.DataFrame):
             obj.to_csv(DATA_PROCESSED / f"{name}.csv", index=False)
@@ -417,4 +495,12 @@ def prepare_modeling_data_credit(df, target_col="Class", test_size=0.2, smote_ra
 
     print(f"\nTrain: {X_train.shape}, Test: {X_test.shape}")
     print(f"After SMOTE: {X_train_smote.shape}")
-    return X_train, X_test, y_train, y_test, X_train_smote, y_train_smote, feature_cols
+    return (
+        X_train,
+        X_test,
+        y_train,
+        y_test,
+        X_train_smote,
+        y_train_smote,
+        feature_cols,
+    )
