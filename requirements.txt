@@ -1,0 +1,10 @@
+flake8
+pandas
+numpy
+seaborn
+matplotlib
+pytest
+scikit-learn
+imbalanced-learn
+shap
+jupyter
