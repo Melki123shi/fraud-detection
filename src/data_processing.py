@@ -157,6 +157,46 @@ def get_fraud_by_country(df, min_transactions=100):
     )
 
 
+def get_country_distribution(df):
+    country_counts = df["country"].value_counts().reset_index()
+    country_counts.columns = ["country", "count"]
+    return country_counts
+
+
+def get_fraud_prob_by_country_count(df, min_transactions=100):
+    stats = df.groupby("country")["class"].agg(["mean", "count"])
+    stats.columns = ["fraud_rate", "total_transactions"]
+    stats = stats[stats["total_transactions"] >= min_transactions]
+    stats["fraud_rate"] *= 100
+    return stats.sort_values("total_transactions", ascending=False)
+
+
+def get_fraud_prob_by_ip_sharing(df, target_col="class"):
+    ip_stats = df.groupby("ip_address")[target_col].agg(["mean", "count"])
+    ip_stats.columns = ["fraud_rate", "sharing_count"]
+    ip_stats["fraud_rate"] *= 100
+    sharing_agg = ip_stats.groupby("sharing_count")["fraud_rate"].agg(
+        ["mean", "count"]
+    )
+    sharing_agg.columns = ["avg_fraud_rate", "num_ips"]
+    sharing_agg.index.name = "ip_sharing_count"
+    return sharing_agg.sort_index()
+
+
+def get_fraud_prob_by_device_sharing(
+    df, device_col="device_id", target_col="class"
+):
+    device_stats = df.groupby(device_col)[target_col].agg(["mean", "count"])
+    device_stats.columns = ["fraud_rate", "sharing_count"]
+    device_stats["fraud_rate"] *= 100
+    sharing_agg = device_stats.groupby("sharing_count")["fraud_rate"].agg(
+        ["mean", "count"]
+    )
+    sharing_agg.columns = ["avg_fraud_rate", "num_devices"]
+    sharing_agg.index.name = "device_sharing_count"
+    return sharing_agg.sort_index()
+
+
 # ---------------------------------------------------------------------------
 # Temporal features
 # ---------------------------------------------------------------------------
