@@ -183,7 +183,9 @@ def get_fraud_prob_by_ip_sharing(df, target_col="class"):
     return sharing_agg.sort_index()
 
 
-def get_fraud_prob_by_device_sharing(df, device_col="device_id", target_col="class"):
+def get_fraud_prob_by_device_sharing(
+    df, device_col="device_id", target_col="class"
+):
     device_stats = df.groupby(device_col)[target_col].agg(["mean", "count"])
     device_stats.columns = ["fraud_rate", "sharing_count"]
     device_stats["fraud_rate"] *= 100
