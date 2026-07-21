@@ -7,4 +7,6 @@ pytest
 scikit-learn
 imbalanced-learn
 shap
+xgboost
+lightgbm
 jupyter
