@@ -4,24 +4,35 @@ import json
 import joblib
 import matplotlib.pyplot as plt
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import StratifiedKFold, cross_validate, RandomizedSearchCV
+from sklearn.model_selection import (
+    StratifiedKFold,
+    cross_validate,
+    RandomizedSearchCV,
+)
 from sklearn.metrics import (
-    precision_recall_curve, auc, f1_score,
-    confusion_matrix, precision_score, recall_score,
-    classification_report, average_precision_score
+    precision_recall_curve,
+    auc,
+    f1_score,
+    confusion_matrix,
+    precision_score,
+    recall_score,
+    classification_report,
+    average_precision_score,
 )
 
 from xgboost import XGBClassifier
 from lightgbm import LGBMClassifier
 
 from src.data_processing import (
-    process_fraud_data, process_creditcard_data,
-    prepare_modeling_data_fraud, prepare_modeling_data_credit,
-    DATA_PROCESSED
+    process_fraud_data,
+    process_creditcard_data,
+    prepare_modeling_data_fraud,
+    prepare_modeling_data_credit,
+    DATA_PROCESSED,
 )
 
 COST_FP = 1.0
@@ -38,22 +49,22 @@ def _ensure_dirs():
 
 
 def _get_fraud_data():
-    '''
-    This function loads and processes the fraud dataset, 
-    returning the training and test sets, as well as 
-    the SMOTE-resampled training set 
+    """
+    This function loads and processes the fraud dataset,
+    returning the training and test sets, as well as
+    the SMOTE-resampled training set
     and feature columns.
-    '''
+    """
     fraud_df, _, _ = process_fraud_data()
     return prepare_modeling_data_fraud(fraud_df)
 
 
 def _get_credit_data():
-    '''
-    This function loads and processes the credit card dataset, 
-    returning the training and test sets, as well as the 
+    """
+    This function loads and processes the credit card dataset,
+    returning the training and test sets, as well as the
     SMOTE-resampled training set and feature columns.
-    '''
+    """
     credit_df = process_creditcard_data()
     return prepare_modeling_data_credit(credit_df)
 
@@ -62,10 +73,10 @@ def _get_credit_data():
 # Model factories
 # ---------------------------------------------------------------------------
 def get_logistic_regression():
-    '''
-    This function returns a logistic regression model 
+    """
+    This function returns a logistic regression model
     with predefined parameters.
-    '''
+    """
     return LogisticRegression(
         max_iter=1000,
         class_weight="balanced",
@@ -75,10 +86,10 @@ def get_logistic_regression():
 
 
 def get_random_forest():
-    '''
-    This function returns a random forest model 
+    """
+    This function returns a random forest model
     with predefined parameters.
-    '''
+    """
     return RandomForestClassifier(
         n_estimators=200,
         max_depth=12,
@@ -91,9 +102,9 @@ def get_random_forest():
 
 
 def get_xgboost():
-    '''
+    """
     This function returns an XGBoost model
-    with predefined parameters.'''
+    with predefined parameters."""
     return XGBClassifier(
         n_estimators=200,
         max_depth=6,
@@ -108,10 +119,10 @@ def get_xgboost():
 
 
 def get_lightgbm():
-    '''
+    """
     This function returns a LightGBM model
     with predefined parameters.
-    '''
+    """
     return LGBMClassifier(
         n_estimators=200,
         max_depth=6,
@@ -129,7 +140,7 @@ def get_lightgbm():
 # Hyperparameter tuning
 # ---------------------------------------------------------------------------
 def get_param_grid(model_name: str, fast: bool = False) -> Dict:
-    '''
+    """
     This function returns a parameter grid for hyperparameter tuning
     based on the model name. Use fast=True for quicker tuning runs.
 
@@ -139,7 +150,7 @@ def get_param_grid(model_name: str, fast: bool = False) -> Dict:
 
     Returns:
     A dictionary representing the parameter grid for the specified model.
-    '''
+    """
     if fast:
         return {
             "LogisticRegression": {
@@ -199,12 +210,17 @@ def get_param_grid(model_name: str, fast: bool = False) -> Dict:
 
 
 def tune_hyperparameters(
-    model_name: str, X_train, y_train,
-    X_test=None, y_test=None,
-    n_iter=20, cv=5, random_state=42,
+    model_name: str,
+    X_train,
+    y_train,
+    X_test=None,
+    y_test=None,
+    n_iter=20,
+    cv=5,
+    random_state=42,
     sample_size=None,
 ) -> Dict:
-    '''
+    """
     This function performs hyperparameter tuning using RandomizedSearchCV
     with StratifiedKFold cross-validation, optimizing for AUC-PR.
     When X_test and y_test are provided, the best estimator is evaluated
@@ -222,10 +238,10 @@ def tune_hyperparameters(
     - sample_size: Optional stratified sample size for faster tuning.
 
     Returns:
-    A dictionary containing the best parameters, best score, the 
+    A dictionary containing the best parameters, best score, the
     best estimator, and (when test data is supplied) the test-set
     evaluation results.
-    '''
+    """
     model_factories = {
         "LogisticRegression": get_logistic_regression,
         "RandomForest": get_random_forest,
@@ -242,8 +258,10 @@ def tune_hyperparameters(
     X_tune, y_tune = X_train, y_train
     if sample_size is not None and len(X_train) > sample_size:
         from sklearn.utils import resample
+
         X_tune, y_tune = resample(
-            X_train, y_train,
+            X_train,
+            y_train,
             n_samples=sample_size,
             stratify=y_train,
             random_state=random_state,
@@ -257,7 +275,11 @@ def tune_hyperparameters(
         "tuned": False,
     }
 
-    cv_splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
+    cv_splitter = StratifiedKFold(
+        n_splits=cv,
+        shuffle=True,
+        random_state=random_state,
+    )
     search = RandomizedSearchCV(
         estimator=model,
         param_distributions=param_grid,
@@ -283,7 +305,10 @@ def tune_hyperparameters(
 
     if X_test is not None and y_test is not None:
         result["test_evaluation"] = _post_tuning_evaluation(
-            search.best_estimator_, X_test, y_test, model_name,
+            search.best_estimator_,
+            X_test,
+            y_test,
+            model_name,
         )
 
     return result
@@ -293,7 +318,7 @@ def tune_hyperparameters(
 # Post-tuning test-set evaluation
 # ---------------------------------------------------------------------------
 def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
-    '''
+    """
     Evaluate the best estimator on the untouched test set.
 
     Produces:
@@ -311,21 +336,42 @@ def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
 
     Returns:
     A dictionary with all evaluation artefacts.
-    '''
+    """
     _ensure_dirs()
 
     y_prob = model.predict_proba(X_test)[:, 1]
 
     # --- 1. Precision-Recall curve + AUC-PR ---
-    precision_arr, recall_arr, thresholds_pr = precision_recall_curve(y_test, y_prob)
-    auc_pr = round(float(auc(recall_arr, precision_arr)), 4)
-    avg_precision = round(float(average_precision_score(y_test, y_prob)), 4)
+    precision_arr, recall_arr, thresholds_pr = precision_recall_curve(
+        y_test,
+        y_prob,
+    )
+    auc_pr = round(
+        float(
+            auc(
+                recall_arr,
+                precision_arr,
+            )
+        ),
+        4,
+    )
+    avg_precision = round(
+        float(
+            average_precision_score(
+                y_test,
+                y_prob,
+            )
+        ),
+        4,
+    )
 
     _save_pr_curve(precision_arr, recall_arr, auc_pr, model_name)
 
     # --- 2. F1 at optimal threshold ---
-    f1_scores = 2 * (precision_arr[:-1] * recall_arr[:-1]) / (
-        precision_arr[:-1] + recall_arr[:-1] + 1e-12
+    f1_scores = (
+        2
+        * (precision_arr[:-1] * recall_arr[:-1])
+        / (precision_arr[:-1] + recall_arr[:-1] + 1e-12)
     )
     best_idx = int(np.argmax(f1_scores))
     optimal_threshold = round(float(thresholds_pr[best_idx]), 4)
@@ -343,8 +389,10 @@ def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
     cost_per_sample = round(total_cost / len(y_test), 4)
 
     cm_dict = {
-        "tn": int(tn), "fp": int(fp),
-        "fn": int(fn), "tp": int(tp),
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
     }
     cost_dict = {
         "cost_fp": COST_FP,
@@ -356,23 +404,26 @@ def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
     }
 
     # --- Console output ---
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"POST-TUNING TEST-SET EVALUATION — {model_name}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  AUC-PR:                  {auc_pr}")
     print(f"  Average Precision:       {avg_precision}")
     print(f"  Optimal Threshold:       {optimal_threshold}")
     print(f"  F1 @ Optimal Threshold:  {f1_at_optimal}")
     print(f"  Precision @ Optimal:     {precision_at_optimal}")
     print(f"  Recall @ Optimal:        {recall_at_optimal}")
-    print(f"\n  Confusion Matrix (optimal threshold):")
+    print("\n  Confusion Matrix (optimal threshold):")
     print(f"    TN={tn}  FP={fp}")
     print(f"    FN={fn}  TP={tp}")
-    print(f"\n  Cost Analysis:")
-    print(f"    FP cost (unit): {COST_FP}   |  total FP cost: {cost_dict['false_positive_cost']}")
-    print(f"    FN cost (unit): {COST_FN}   |  total FN cost: {cost_dict['false_negative_cost']}")
-    print(f"    Total cost: {cost_dict['total_cost']}  |  cost / sample: {cost_per_sample}")
-    print(f"{'='*60}\n")
+    print("\n  Cost Analysis:")
+    fp_cost_total = cost_dict["false_positive_cost"]
+    fn_cost_total = cost_dict["false_negative_cost"]
+    total_cost_val = cost_dict["total_cost"]
+    print(f"  FP cost (unit): {COST_FP} | total FP cost: {fp_cost_total}")
+    print(f"  FN cost (unit): {COST_FN} | total FN cost: {fn_cost_total}")
+    print(f"  Total cost: {total_cost_val} | cost / sample: {cost_per_sample}")
+    print(f"{'=' * 60}\n")
 
     return {
         "auc_pr": auc_pr,
@@ -384,19 +435,26 @@ def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
         "confusion_matrix": cm_dict,
         "cost_analysis": cost_dict,
         "classification_report": classification_report(
-            y_test, y_pred_optimal, output_dict=True,
+            y_test,
+            y_pred_optimal,
+            output_dict=True,
         ),
     }
 
 
 def _save_pr_curve(precision_arr, recall_arr, auc_pr: float, model_name: str):
-    '''
+    """
     Plot and save the Precision-Recall curve for a single model.
-    '''
+    """
     _ensure_dirs()
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(recall_arr, precision_arr, linewidth=2, label=f"PR curve (AUC-PR = {auc_pr})")
+    ax.plot(
+        recall_arr,
+        precision_arr,
+        linewidth=2,
+        label=f"PR curve (AUC-PR = {auc_pr})",
+    )
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title(f"Precision-Recall Curve — {model_name} (post-tuning)")
@@ -404,7 +462,8 @@ def _save_pr_curve(precision_arr, recall_arr, auc_pr: float, model_name: str):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
-    path = IMAGES_DIR / "modeling" / f"{model_name.lower()}_pr_curve_post_tuning.png"
+    local_path = f"{model_name.lower()}_pr_curve_post_tuning.png"
+    path = IMAGES_DIR / "modeling" / local_path
     fig.savefig(path, dpi=150)
     print(f"PR curve saved to {path}")
     plt.close(fig)
@@ -414,7 +473,7 @@ def _save_pr_curve(precision_arr, recall_arr, auc_pr: float, model_name: str):
 # Evaluation
 # ---------------------------------------------------------------------------
 def evaluate_model(model, X_test, y_test) -> Dict:
-    '''
+    """
     This function evaluates a trained model on the test set,
     returning various performance metrics.
 
@@ -427,7 +486,7 @@ def evaluate_model(model, X_test, y_test) -> Dict:
     A dictionary containing evaluation metrics such as AUC-PR,
     average precision, F1 score, precision, recall, accuracy,
     confusion matrix, and classification report.
-    '''
+    """
     y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
 
@@ -447,18 +506,24 @@ def evaluate_model(model, X_test, y_test) -> Dict:
         "recall": round(float(recall_score(y_test, y_pred)), 4),
         "accuracy": round(float((tp + tn) / (tp + tn + fp + fn)), 4),
         "confusion_matrix": {
-            "tn": int(tn), "fp": int(fp),
-            "fn": int(fn), "tp": int(tp),
+            "tn": int(tn),
+            "fp": int(fp),
+            "fn": int(fn),
+            "tp": int(tp),
         },
-        "classification_report": classification_report(y_test, y_pred, output_dict=True),
+        "classification_report": classification_report(
+            y_test,
+            y_pred,
+            output_dict=True,
+        ),
     }
 
 
 def cross_validate_model(model, X, y, cv=5) -> Dict:
-    '''
+    """
     This function performs cross-validation on a given model,
     returning the mean and standard deviation of various metrics.
-    
+
     Parameters:
     - model: The model to cross-validate.
     - X: The feature set for cross-validation.
@@ -467,9 +532,9 @@ def cross_validate_model(model, X, y, cv=5) -> Dict:
 
     Returns:
     A dictionary containing the mean and standard deviation of
-    AUC-PR, F1 score, precision, and recall 
+    AUC-PR, F1 score, precision, and recall
     across the cross-validation folds.
-    '''
+    """
     scoring = {
         "auc_pr": "average_precision",
         "f1": "f1",
@@ -478,8 +543,13 @@ def cross_validate_model(model, X, y, cv=5) -> Dict:
     }
     cv_splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=42)
     cv_results = cross_validate(
-        model, X, y, cv=cv_splitter, scoring=scoring,
-        return_train_score=False, n_jobs=-1
+        model,
+        X,
+        y,
+        cv=cv_splitter,
+        scoring=scoring,
+        return_train_score=False,
+        n_jobs=-1,
     )
     return {
         metric: {
@@ -494,8 +564,13 @@ def cross_validate_model(model, X, y, cv=5) -> Dict:
 # ---------------------------------------------------------------------------
 # Training pipelines
 # ---------------------------------------------------------------------------
-def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
-    '''
+def train_all_models(
+    dataset="fraud",
+    use_smote=True,
+    do_tune=False,
+    n_iter=20,
+):
+    """
     This function trains multiple models on the specified dataset,
     optionally using SMOTE for resampling. It evaluates each model,
     performs cross-validation, and saves the results and best model.
@@ -513,16 +588,36 @@ def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
     A dictionary containing the results of model evaluations,
     the trained models, the best model's name and instance,
     feature columns, and the training and test sets.
-    '''
+    """
     _ensure_dirs()
 
     if dataset == "fraud":
-        X_train, X_test, y_train, y_test, X_train_smote, y_train_smote, feature_cols = _get_fraud_data()
-        train_X, train_y = (X_train_smote, y_train_smote) if use_smote else (X_train, y_train)
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            X_train_smote,
+            y_train_smote,
+            feature_cols,
+        ) = _get_fraud_data()
+        train_X, train_y = (
+            (X_train_smote, y_train_smote) if use_smote else (X_train, y_train)
+        )
         dataset_name = "fraud"
     else:
-        X_train, X_test, y_train, y_test, X_train_smote, y_train_smote, feature_cols = _get_credit_data()
-        train_X, train_y = (X_train_smote, y_train_smote) if use_smote else (X_train, y_train)
+        (
+            X_train,
+            X_test,
+            y_train,
+            y_test,
+            X_train_smote,
+            y_train_smote,
+            feature_cols,
+        ) = _get_credit_data()
+        train_X, train_y = (
+            (X_train_smote, y_train_smote) if use_smote else (X_train, y_train)
+        )
         dataset_name = "credit"
 
     models = {
@@ -535,24 +630,34 @@ def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
     results = []
     trained_models = {}
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"TRAINING MODELS — {dataset_name.upper()} DATASET")
-    print(f"{'='*60}")
-    print(f"Training on {'SMOTE-resampled' if use_smote else 'original'} data: {train_X.shape}")
+    print(f"{'=' * 60}")
+    print(
+        f"Training on {'SMOTE-resampled' if use_smote else 'original'}"
+        f" data: {train_X.shape}"
+    )
     print(f"Test set (untouched): {X_test.shape}")
     if do_tune:
-        print(f"Hyperparameter tuning: ENABLED (n_iter={n_iter}, cv=3, sample_size=50000)")
+        vals = f"n_iter={n_iter}, cv=5, random_state=42"
+        print(f"Hyperparameter tuning: ENABLED ({vals})")
     print()
 
     for name, model in models.items():
         print(f"Training {name}...")
 
         if do_tune:
-            effective_n_iter = min(n_iter, 10) if dataset == "credit" else n_iter
+            if dataset == "credit":
+                effective_n_iter = min(n_iter, 10)
+            else:
+                effective_n_iter = n_iter
             sample_size = 50000 if dataset == "credit" else None
             tune_result = tune_hyperparameters(
-                name, train_X, train_y,
-                n_iter=effective_n_iter, cv=3,
+                name,
+                train_X,
+                train_y,
+                n_iter=effective_n_iter,
+                cv=3,
                 random_state=42,
                 sample_size=sample_size,
             )
@@ -585,7 +690,11 @@ def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
         print(f"  F1:      {metrics['f1_score']}")
         print(f"  Prec:    {metrics['precision']}")
         print(f"  Recall:  {metrics['recall']}")
-        print(f"  ConfMat: TN={metrics['confusion_matrix']['tn']}, FP={metrics['confusion_matrix']['fp']}, FN={metrics['confusion_matrix']['fn']}, TP={metrics['confusion_matrix']['tp']}")
+        conf_metric = metrics["confusion_matrix"]
+        print(
+            f"  ConfMat: TN={conf_metric['tn']}, FP={conf_metric['fp']}, "
+            f"FN={conf_metric['fn']}, TP={conf_metric['tp']}"
+        )
         print()
 
     # Save results (exclude model objects from JSON)
@@ -620,7 +729,7 @@ def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
 
 
 def compare_models(results: List[Dict]) -> pd.DataFrame:
-    '''
+    """
     This function takes a list of model evaluation results and returns a
     pandas DataFrame summarizing the performance metrics of each model.
 
@@ -630,49 +739,53 @@ def compare_models(results: List[Dict]) -> pd.DataFrame:
     Returns:
     A pandas DataFrame with columns for model name, dataset, AUC-PR,
     F1 score, precision, recall, accuracy, and cross-validation metrics.
-    '''
+    """
     rows = []
     for r in results:
         eval_m = r["evaluation"]
         cv_m = r["cross_validation"]
-        rows.append({
-            "Model": r["name"],
-            "Dataset": r["dataset"],
-            "AUC-PR": eval_m["auc_pr"],
-            "F1-Score": eval_m["f1_score"],
-            "Precision": eval_m["precision"],
-            "Recall": eval_m["recall"],
-            "Accuracy": eval_m["accuracy"],
-            "CV AUC-PR (mean)": cv_m.get("auc_pr", {}).get("mean", "-"),
-            "CV F1 (mean)": cv_m.get("f1", {}).get("mean", "-"),
-        })
+        rows.append(
+            {
+                "Model": r["name"],
+                "Dataset": r["dataset"],
+                "AUC-PR": eval_m["auc_pr"],
+                "F1-Score": eval_m["f1_score"],
+                "Precision": eval_m["precision"],
+                "Recall": eval_m["recall"],
+                "Accuracy": eval_m["accuracy"],
+                "CV AUC-PR (mean)": cv_m.get("auc_pr", {}).get("mean", "-"),
+                "CV F1 (mean)": cv_m.get("f1", {}).get("mean", "-"),
+            }
+        )
     df = pd.DataFrame(rows)
     return df.sort_values("F1-Score", ascending=False).reset_index(drop=True)
 
 
 def get_best_model(dataset="fraud"):
-    '''
+    """
     This function loads the best saved model for the specified dataset.
 
     Parameters:
-    - dataset: The dataset for which to load the best model 
+    - dataset: The dataset for which to load the best model
     ("fraud" or "credit").
 
     Returns:
     The best trained model for the specified dataset.
-    '''
+    """
     model_path = MODELS_DIR / f"best_model_{dataset}.pkl"
     if not model_path.exists():
-        msg = (
-            f"No saved model found at {model_path}. "
-            "Run train_all_models first."
-        )
+        not_found = f"No saved model found at {model_path}"
+        msg = f"{not_found}. Run train_all_models first."
         raise FileNotFoundError(msg)
     return joblib.load(model_path)
 
 
-def get_feature_importance(model, feature_names: List[str], top_n: int = 20) -> pd.DataFrame:
-    '''
+def get_feature_importance(
+    model,
+    feature_names: List[str],
+    top_n: int = 20,
+) -> pd.DataFrame:
+    """
     This function extracts feature importance from a trained model
     and returns a DataFrame sorted by importance.
 
@@ -684,28 +797,36 @@ def get_feature_importance(model, feature_names: List[str], top_n: int = 20) -> 
     Returns:
     A pandas DataFrame with columns 'feature' and 'importance',
     sorted by importance in descending order.
-    '''
+    """
     if hasattr(model, "feature_importances_"):
         importances = model.feature_importances_
     elif hasattr(model, "coef_"):
         importances = model.coef_[0]
     else:
-        raise ValueError(
-            "Model does not expose feature_importances_ or coef_."
-        )
+        msg = "Model does not expose feature_importances_ or coef_."
+        raise ValueError(msg)
 
-    df = pd.DataFrame({
-        "feature": feature_names,
-        "importance": importances,
-    }).sort_values("importance", ascending=False).reset_index(drop=True)
+    df = (
+        pd.DataFrame(
+            {
+                "feature": feature_names,
+                "importance": importances,
+            }
+        )
+        .sort_values("importance", ascending=False)
+        .reset_index(drop=True)
+    )
     return df.head(top_n)
 
 
 def plot_feature_importance(
-    model, feature_names: List[str], dataset: str,
-    top_n: int = 20, save: bool = True
+    model,
+    feature_names: List[str],
+    dataset: str,
+    top_n: int = 20,
+    save: bool = True,
 ) -> pd.DataFrame:
-    '''
+    """
     This function plots feature importance for a trained model
     and optionally saves the plot.
 
@@ -718,7 +839,7 @@ def plot_feature_importance(
 
     Returns:
     A pandas DataFrame with the top features and their importance.
-    '''
+    """
     _ensure_dirs()
     df = get_feature_importance(model, feature_names, top_n)
 
@@ -726,8 +847,7 @@ def plot_feature_importance(
     ax.barh(df["feature"][::-1], df["importance"][::-1], color="steelblue")
     ax.set_xlabel("Importance")
     ax.set_title(
-        f"Top {top_n} Feature Importances — "
-        f"{type(model).__name__} ({dataset})"
+        f"Top {top_n} Feature Importances — {type(model).__name__} ({dataset})"
     )
     plt.tight_layout()
 
