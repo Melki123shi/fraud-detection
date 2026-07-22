@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import json
 import joblib
@@ -23,6 +24,9 @@ from src.data_processing import (
     DATA_PROCESSED
 )
 
+COST_FP = 1.0
+COST_FN = 10.0
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models"
 IMAGES_DIR = PROJECT_ROOT / "notebooks" / "images"
@@ -30,7 +34,7 @@ IMAGES_DIR = PROJECT_ROOT / "notebooks" / "images"
 
 def _ensure_dirs():
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    (IMAGES_DIR / "modeling").mkdir(parents=True, exist_ok=True)
 
 
 def _get_fraud_data():
@@ -124,17 +128,41 @@ def get_lightgbm():
 # ---------------------------------------------------------------------------
 # Hyperparameter tuning
 # ---------------------------------------------------------------------------
-def get_param_grid(model_name: str) -> Dict:
+def get_param_grid(model_name: str, fast: bool = False) -> Dict:
     '''
     This function returns a parameter grid for hyperparameter tuning
-    based on the model name.
+    based on the model name. Use fast=True for quicker tuning runs.
 
     Parameters:
     - model_name: The name of the model for which to get the parameter grid.
+    - fast: If True, return a smaller grid for faster tuning.
 
     Returns:
     A dictionary representing the parameter grid for the specified model.
     '''
+    if fast:
+        return {
+            "LogisticRegression": {
+                "C": [0.01, 1.0, 100.0],
+                "solver": ["lbfgs", "saga"],
+            },
+            "RandomForest": {
+                "n_estimators": [100, 200],
+                "max_depth": [8, 12],
+                "min_samples_split": [10],
+            },
+            "XGBoost": {
+                "n_estimators": [100, 200],
+                "max_depth": [3, 6],
+                "learning_rate": [0.05, 0.1],
+            },
+            "LightGBM": {
+                "n_estimators": [100, 200],
+                "max_depth": [3, 6],
+                "learning_rate": [0.05, 0.1],
+            },
+        }.get(model_name, {})
+
     param_grids = {
         "LogisticRegression": {
             "C": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
@@ -170,22 +198,33 @@ def get_param_grid(model_name: str) -> Dict:
     return param_grids.get(model_name, {})
 
 
-def tune_hyperparameters(model_name: str, X_train, y_train, n_iter=20, cv=5, random_state=42) -> Dict:
+def tune_hyperparameters(
+    model_name: str, X_train, y_train,
+    X_test=None, y_test=None,
+    n_iter=20, cv=5, random_state=42,
+    sample_size=None,
+) -> Dict:
     '''
     This function performs hyperparameter tuning using RandomizedSearchCV
     with StratifiedKFold cross-validation, optimizing for AUC-PR.
+    When X_test and y_test are provided, the best estimator is evaluated
+    on the untouched test set with a full post-tuning report.
 
     Parameters:
     - model_name: The name of the model to tune.
     - X_train: The feature set for training.
     - y_train: The true labels for training.
+    - X_test: The held-out test feature set (optional).
+    - y_test: The held-out test labels (optional).
     - n_iter: The number of parameter settings sampled (default is 20).
     - cv: The number of cross-validation folds (default is 5).
     - random_state: The random seed for reproducibility (default is 42).
+    - sample_size: Optional stratified sample size for faster tuning.
 
     Returns:
-    A dictionary containing the best parameters, best score, and the 
-    best estimator.
+    A dictionary containing the best parameters, best score, the 
+    best estimator, and (when test data is supplied) the test-set
+    evaluation results.
     '''
     model_factories = {
         "LogisticRegression": get_logistic_regression,
@@ -200,13 +239,23 @@ def tune_hyperparameters(model_name: str, X_train, y_train, n_iter=20, cv=5, ran
     model = model_factories[model_name]()
     param_grid = get_param_grid(model_name)
 
-    if not param_grid:
-        return {
-            "best_params": model.get_params(),
-            "best_score": None,
-            "best_estimator": model,
-            "tuned": False,
-        }
+    X_tune, y_tune = X_train, y_train
+    if sample_size is not None and len(X_train) > sample_size:
+        from sklearn.utils import resample
+        X_tune, y_tune = resample(
+            X_train, y_train,
+            n_samples=sample_size,
+            stratify=y_train,
+            random_state=random_state,
+        )
+        print(f"  Using stratified sample: {len(X_tune):,} rows")
+
+    result = {
+        "best_params": model.get_params(),
+        "best_score": None,
+        "best_estimator": model,
+        "tuned": False,
+    }
 
     cv_splitter = StratifiedKFold(n_splits=cv, shuffle=True, random_state=random_state)
     search = RandomizedSearchCV(
@@ -216,20 +265,149 @@ def tune_hyperparameters(model_name: str, X_train, y_train, n_iter=20, cv=5, ran
         cv=cv_splitter,
         scoring="average_precision",
         n_jobs=-1,
-        verbose=1,
+        verbose=0,
         random_state=random_state,
         return_train_score=False,
     )
 
-    search.fit(X_train, y_train)
+    print(f"Fitting {model_name} with hyperparameter grid...")
+    search.fit(X_tune, y_tune)
 
-    return {
+    result = {
         "best_params": search.best_params_,
         "best_score": round(float(search.best_score_), 4),
         "best_estimator": search.best_estimator_,
         "tuned": True,
         "cv_results": search.cv_results_,
     }
+
+    if X_test is not None and y_test is not None:
+        result["test_evaluation"] = _post_tuning_evaluation(
+            search.best_estimator_, X_test, y_test, model_name,
+        )
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Post-tuning test-set evaluation
+# ---------------------------------------------------------------------------
+def _post_tuning_evaluation(model, X_test, y_test, model_name: str) -> Dict:
+    '''
+    Evaluate the best estimator on the untouched test set.
+
+    Produces:
+    1. Precision-Recall curve + AUC-PR
+    2. F1 at the optimal (max-F1) threshold
+    3. Confusion matrix + cost analysis
+
+    The PR curve plot is saved to the images directory.
+
+    Parameters:
+    - model: The fitted best estimator.
+    - X_test: Held-out test features.
+    - y_test: Held-out test labels.
+    - model_name: Name of the model (used for the saved plot).
+
+    Returns:
+    A dictionary with all evaluation artefacts.
+    '''
+    _ensure_dirs()
+
+    y_prob = model.predict_proba(X_test)[:, 1]
+
+    # --- 1. Precision-Recall curve + AUC-PR ---
+    precision_arr, recall_arr, thresholds_pr = precision_recall_curve(y_test, y_prob)
+    auc_pr = round(float(auc(recall_arr, precision_arr)), 4)
+    avg_precision = round(float(average_precision_score(y_test, y_prob)), 4)
+
+    _save_pr_curve(precision_arr, recall_arr, auc_pr, model_name)
+
+    # --- 2. F1 at optimal threshold ---
+    f1_scores = 2 * (precision_arr[:-1] * recall_arr[:-1]) / (
+        precision_arr[:-1] + recall_arr[:-1] + 1e-12
+    )
+    best_idx = int(np.argmax(f1_scores))
+    optimal_threshold = round(float(thresholds_pr[best_idx]), 4)
+    f1_at_optimal = round(float(f1_scores[best_idx]), 4)
+    precision_at_optimal = round(float(precision_arr[best_idx]), 4)
+    recall_at_optimal = round(float(recall_arr[best_idx]), 4)
+
+    y_pred_optimal = (y_prob >= optimal_threshold).astype(int)
+
+    # --- 3. Confusion matrix + cost analysis ---
+    cm = confusion_matrix(y_test, y_pred_optimal)
+    tn, fp, fn, tp = cm.ravel()
+
+    total_cost = fp * COST_FP + fn * COST_FN
+    cost_per_sample = round(total_cost / len(y_test), 4)
+
+    cm_dict = {
+        "tn": int(tn), "fp": int(fp),
+        "fn": int(fn), "tp": int(tp),
+    }
+    cost_dict = {
+        "cost_fp": COST_FP,
+        "cost_fn": COST_FN,
+        "total_cost": round(float(total_cost), 4),
+        "cost_per_sample": cost_per_sample,
+        "false_positive_cost": round(float(fp * COST_FP), 4),
+        "false_negative_cost": round(float(fn * COST_FN), 4),
+    }
+
+    # --- Console output ---
+    print(f"\n{'='*60}")
+    print(f"POST-TUNING TEST-SET EVALUATION — {model_name}")
+    print(f"{'='*60}")
+    print(f"  AUC-PR:                  {auc_pr}")
+    print(f"  Average Precision:       {avg_precision}")
+    print(f"  Optimal Threshold:       {optimal_threshold}")
+    print(f"  F1 @ Optimal Threshold:  {f1_at_optimal}")
+    print(f"  Precision @ Optimal:     {precision_at_optimal}")
+    print(f"  Recall @ Optimal:        {recall_at_optimal}")
+    print(f"\n  Confusion Matrix (optimal threshold):")
+    print(f"    TN={tn}  FP={fp}")
+    print(f"    FN={fn}  TP={tp}")
+    print(f"\n  Cost Analysis:")
+    print(f"    FP cost (unit): {COST_FP}   |  total FP cost: {cost_dict['false_positive_cost']}")
+    print(f"    FN cost (unit): {COST_FN}   |  total FN cost: {cost_dict['false_negative_cost']}")
+    print(f"    Total cost: {cost_dict['total_cost']}  |  cost / sample: {cost_per_sample}")
+    print(f"{'='*60}\n")
+
+    return {
+        "auc_pr": auc_pr,
+        "average_precision": avg_precision,
+        "optimal_threshold": optimal_threshold,
+        "f1_at_optimal_threshold": f1_at_optimal,
+        "precision_at_optimal": precision_at_optimal,
+        "recall_at_optimal": recall_at_optimal,
+        "confusion_matrix": cm_dict,
+        "cost_analysis": cost_dict,
+        "classification_report": classification_report(
+            y_test, y_pred_optimal, output_dict=True,
+        ),
+    }
+
+
+def _save_pr_curve(precision_arr, recall_arr, auc_pr: float, model_name: str):
+    '''
+    Plot and save the Precision-Recall curve for a single model.
+    '''
+    _ensure_dirs()
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(recall_arr, precision_arr, linewidth=2, label=f"PR curve (AUC-PR = {auc_pr})")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title(f"Precision-Recall Curve — {model_name} (post-tuning)")
+    ax.legend(loc="best")
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    path = IMAGES_DIR / "modeling" / f"{model_name.lower()}_pr_curve_post_tuning.png"
+    fig.savefig(path, dpi=150)
+    print(f"PR curve saved to {path}")
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -363,14 +541,21 @@ def train_all_models(dataset="fraud", use_smote=True, do_tune=False, n_iter=20):
     print(f"Training on {'SMOTE-resampled' if use_smote else 'original'} data: {train_X.shape}")
     print(f"Test set (untouched): {X_test.shape}")
     if do_tune:
-        print(f"Hyperparameter tuning: ENABLED (n_iter={n_iter})")
+        print(f"Hyperparameter tuning: ENABLED (n_iter={n_iter}, cv=3, sample_size=50000)")
     print()
 
     for name, model in models.items():
         print(f"Training {name}...")
 
         if do_tune:
-            tune_result = tune_hyperparameters(name, train_X, train_y, n_iter=n_iter)
+            effective_n_iter = min(n_iter, 10) if dataset == "credit" else n_iter
+            sample_size = 50000 if dataset == "credit" else None
+            tune_result = tune_hyperparameters(
+                name, train_X, train_y,
+                n_iter=effective_n_iter, cv=3,
+                random_state=42,
+                sample_size=sample_size,
+            )
             if tune_result["tuned"]:
                 model = tune_result["best_estimator"]
                 print(f"  Tuned best params: {tune_result['best_params']}")
