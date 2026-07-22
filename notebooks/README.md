@@ -326,3 +326,9 @@ pytest tests/test_data_processing.py::TestCategorizeHour -v
 # Run with coverage report
 pytest tests/ --cov=src --cov-report=term-missing
 ```
+
+---
+
+## Task 2 Documentation
+
+For Task 2 (Model Building, Training, and Evaluation), see **[notebooks/doc.md](doc.md)** for the full blog-style implementation report, model comparison results, and evaluation insights.

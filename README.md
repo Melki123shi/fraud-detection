@@ -86,15 +86,16 @@ The project is organized into the following notebooks:
    - Data transformation and scaling
    - SMOTE for class imbalance handling
 
-4. **Modeling** (`notebooks/modeling.ipynb`) - *Coming in Interim-2*
-   - Logistic Regression baseline
-   - Random Forest / XGBoost ensemble models
-   - Model evaluation and comparison
+4. **Modeling** (`notebooks/modeling.ipynb`)
+    - Logistic Regression baseline
+    - Random Forest, XGBoost, LightGBM ensemble models
+    - Stratified 5-Fold Cross-Validation
+    - Model evaluation and comparison
 
-5. **SHAP Explainability** (`notebooks/shap-explainability.ipynb`) - *Coming in Final*
-   - SHAP summary plots
-   - SHAP force plots
-   - Business recommendations
+ 5. **SHAP Explainability** (`notebooks/shap-explainability.ipynb`) - *Coming in Final*
+    - SHAP summary plots
+    - SHAP force plots
+    - Business recommendations
 
 ## Datasets
 
@@ -158,6 +159,26 @@ The project is organized into the following notebooks:
 - **creditcard.csv**: 1:3 ratio (original ~1:588)
 - Applied only to training sets to prevent data leakage
 
+## Task 2: Model Building and Training
+
+### Models Trained
+- **Baseline:** Logistic Regression (class_weight='balanced', max_iter=1000)
+- **Ensemble:** Random Forest (200 trees, max_depth=12), XGBoost (200 estimators, max_depth=6), LightGBM (200 estimators, max_depth=6)
+- **Validation:** Stratified 5-Fold Cross-Validation on training sets
+- **Resampling:** SMOTE applied to training data only (Fraud: 1:2 ratio, Credit: 1:3 ratio)
+
+### Evaluation Metrics
+All models evaluated on untouched test sets using:
+- **AUC-PR** — primary metric for imbalanced data
+- **F1-Score** — balance of precision and recall
+- **Precision / Recall** — trade-off analysis
+- **Confusion Matrix** — detailed error breakdown
+
+### Model Selection
+- Best model per dataset selected based on F1-Score
+- Models saved to `models/` directory
+- Results saved to `data/processed/model_results_*.json`
+
 ## Key Findings
 
 ### Fraud_Data.csv
@@ -188,7 +209,16 @@ The project uses metrics appropriate for imbalanced data:
 - Matplotlib, Seaborn
 - Scikit-learn
 - imbalanced-learn (SMOTE)
+- XGBoost, LightGBM
 - SHAP (for explainability)
+- Joblib (model serialization)
+
+## Project Modules
+
+- `src/data_processing.py` — Data loading, cleaning, feature engineering, scaling, SMOTE
+- `src/modeling.py` — Model training, evaluation, cross-validation, model selection
+- `src/explainability.py` — SHAP analysis, feature importance, force plots
+- `src/constants.py` — Column types, feature lists, file paths
 
 ## License
 
