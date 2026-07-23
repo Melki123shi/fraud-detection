@@ -55,7 +55,7 @@ def _get_fraud_data():
     the SMOTE-resampled training set
     and feature columns.
     """
-    fraud_df, _, _ = process_fraud_data()
+    fraud_df = process_fraud_data()
     return prepare_modeling_data_fraud(fraud_df)
 
 
@@ -477,6 +477,10 @@ def evaluate_model(model, X_test, y_test) -> Dict:
     This function evaluates a trained model on the test set,
     returning various performance metrics.
 
+    Uses the optimal threshold from the PR curve (max F1) instead
+    of the default 0.5, which is critical for imbalanced datasets
+    and models trained on SMOTE-resampled data.
+
     Parameters:
     - model: The trained model to evaluate.
     - X_test: The feature set for testing.
@@ -487,12 +491,23 @@ def evaluate_model(model, X_test, y_test) -> Dict:
     average precision, F1 score, precision, recall, accuracy,
     confusion matrix, and classification report.
     """
-    y_pred = model.predict(X_test)
     y_prob = model.predict_proba(X_test)[:, 1]
 
-    precision, recall, _ = precision_recall_curve(y_test, y_prob)
-    auc_pr = auc(recall, precision)
+    precision_arr, recall_arr, thresholds_pr = precision_recall_curve(
+        y_test, y_prob
+    )
+    auc_pr = auc(recall_arr, precision_arr)
     avg_precision = average_precision_score(y_test, y_prob)
+
+    f1_scores = (
+        2
+        * (precision_arr[:-1] * recall_arr[:-1])
+        / (precision_arr[:-1] + recall_arr[:-1] + 1e-12)
+    )
+    best_idx = int(np.argmax(f1_scores))
+    optimal_threshold = float(thresholds_pr[best_idx])
+
+    y_pred = (y_prob >= optimal_threshold).astype(int)
 
     cm = confusion_matrix(y_test, y_pred)
     tn, fp, fn, tp = cm.ravel()
@@ -501,6 +516,7 @@ def evaluate_model(model, X_test, y_test) -> Dict:
         "model": type(model).__name__,
         "auc_pr": round(float(auc_pr), 4),
         "average_precision": round(float(avg_precision), 4),
+        "optimal_threshold": round(float(optimal_threshold), 4),
         "f1_score": round(float(f1_score(y_test, y_pred)), 4),
         "precision": round(float(precision_score(y_test, y_pred)), 4),
         "recall": round(float(recall_score(y_test, y_pred)), 4),
@@ -690,6 +706,7 @@ def train_all_models(
         print(f"  F1:      {metrics['f1_score']}")
         print(f"  Prec:    {metrics['precision']}")
         print(f"  Recall:  {metrics['recall']}")
+        print(f"  Thresh:  {metrics['optimal_threshold']}")
         conf_metric = metrics["confusion_matrix"]
         print(
             f"  ConfMat: TN={conf_metric['tn']}, FP={conf_metric['fp']}, "
