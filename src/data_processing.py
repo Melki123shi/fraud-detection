@@ -148,6 +148,48 @@ def add_country_risk_features(df, min_transactions=100, top_n=10):
     return df, significant
 
 
+def fit_country_risk(X_train, min_transactions=100, top_n=10):
+    stats = X_train.groupby("country")["class"].agg(["mean", "count"])
+    stats.columns = ["fraud_rate", "total_transactions"]
+    significant = stats[stats["total_transactions"] >= min_transactions]
+    high_risk = (
+        significant.sort_values("fraud_rate", ascending=False)
+        .head(top_n)
+        .index.tolist()
+    )
+    return {"high_risk": high_risk, "significant": significant}
+
+
+def apply_country_risk(X, country_risk_info):
+    high_risk = country_risk_info["high_risk"]
+    X = X.copy()
+    X["is_high_risk_country"] = X["country"].isin(high_risk).astype(int)
+    X["is_unknown_country"] = (X["country"] == "Unknown").astype(int)
+    return X
+
+
+def fit_fraud_rates(X_train, user_col="user_id", device_col="device_id",
+                    target_col="class"):
+    user_rates = X_train.groupby(user_col)[target_col].mean()
+    device_rates = X_train.groupby(device_col)[target_col].mean()
+    return {
+        "user_rates": user_rates,
+        "device_rates": device_rates,
+    }
+
+
+def apply_fraud_rates(X, fraud_rate_info, user_col="user_id",
+                      device_col="device_id"):
+    X = X.copy()
+    X["user_historical_fraud_rate"] = (
+        X[user_col].map(fraud_rate_info["user_rates"]).fillna(0)
+    )
+    X["device_historical_fraud_rate"] = (
+        X[device_col].map(fraud_rate_info["device_rates"]).fillna(0)
+    )
+    return X
+
+
 def get_fraud_by_country(df, min_transactions=100):
     stats = df.groupby("country")["class"].agg(["mean", "count"])
     stats.columns = ["fraud_rate", "total_transactions"]
@@ -238,21 +280,13 @@ def engineer_temporal_features(
 # ---------------------------------------------------------------------------
 # Velocity features
 # ---------------------------------------------------------------------------
-def engineer_velocity_features(
-    df, user_col="user_id", device_col="device_id", target_col="class"
-):
+def engineer_velocity_features(df, user_col="user_id", device_col="device_id"):
     df = df.copy()
     df["user_total_transactions"] = (
         df.groupby(user_col)[user_col].transform("count")
     )
     df["device_total_transactions"] = (
         df.groupby(device_col)[device_col].transform("count")
-    )
-    df["user_historical_fraud_rate"] = (
-        df.groupby(user_col)[target_col].transform("mean")
-    )
-    df["device_historical_fraud_rate"] = (
-        df.groupby(device_col)[target_col].transform("mean")
     )
     df_group_device = df.groupby(device_col)[user_col]
     df_group_user = df.groupby(user_col)[device_col]
@@ -356,18 +390,16 @@ def process_fraud_data():
     df = handle_cleaning(df)
     print(f"After cleaning: {df.shape}")
 
-    # Geolocation
+    # Geolocation (no target dependency)
     ip_df = load_ip_to_country()
     ip_ranges = prepare_ip_ranges(ip_df)
     df = add_ip_country(df, ip_ranges)
-    df, significant_countries = add_country_risk_features(df)
-    fraud_by_country = get_fraud_by_country(df)
     print(f"Countries mapped. Unique: {df['country'].nunique()}")
 
-    # Temporal features
+    # Temporal features (no target dependency)
     df = engineer_temporal_features(df)
 
-    # Velocity features
+    # Non-target velocity features (no target dependency)
     df = engineer_velocity_features(df)
 
     # Encode categoricals
@@ -379,7 +411,7 @@ def process_fraud_data():
     df.to_csv(DATA_PROCESSED / "fraud_data_features.csv", index=False)
     print(f"Saved fraud_data_features.csv  shape={df.shape}")
 
-    return df, fraud_by_country, significant_countries
+    return df
 
 
 def process_creditcard_data():
@@ -412,6 +444,53 @@ def prepare_modeling_data_fraud(
     test_size=0.2,
     smote_ratio=0.5,
 ):
+    # ------------------------------------------------------------------
+    # Step 1: Stratified train/test split FIRST (before any target-
+    #         dependent feature engineering).
+    # ------------------------------------------------------------------
+    X = df.drop(columns=[target_col]).copy()
+    y = df[target_col].copy()
+    X_train, X_test, y_train, y_test = stratified_split(X, y, test_size)
+
+    # ------------------------------------------------------------------
+    # Step 2: Target-dependent features — FIT on training data ONLY,
+    #         then APPLY to both splits.
+    # ------------------------------------------------------------------
+    country_risk_info = fit_country_risk(
+        pd.concat([X_train, y_train], axis=1),
+        min_transactions=100,
+        top_n=10,
+    )
+    X_train = apply_country_risk(X_train, country_risk_info)
+    X_test = apply_country_risk(X_test, country_risk_info)
+
+    # Drop helper column used for country risk
+    X_train = X_train.drop(columns=["country"], errors="ignore")
+    X_test = X_test.drop(columns=["country"], errors="ignore")
+
+    # ------------------------------------------------------------------
+    # Step 3: Drop features that are constant or useless.
+    #   - user_historical_fraud_rate / device_historical_fraud_rate:
+    #     Every user has exactly 1 transaction, so user-level fraud rate
+    #     is just the label itself (pure leakage). Device-level rates
+    #     become constant for unseen test users.
+    #   - user_total_transactions: Constant 1 (one tx per user).
+    #   - Rolling windows (24h/7d/30d): Constant 1 (one tx per user).
+    # ------------------------------------------------------------------
+    drop_features = [
+        "user_historical_fraud_rate",
+        "device_historical_fraud_rate",
+        "user_total_transactions",
+        "user_transactions_24h",
+        "user_transactions_7d",
+        "user_transactions_30d",
+    ]
+    X_train = X_train.drop(columns=drop_features, errors="ignore")
+    X_test = X_test.drop(columns=drop_features, errors="ignore")
+
+    # ------------------------------------------------------------------
+    # Step 4: Determine feature columns (exclude non-feature columns).
+    # ------------------------------------------------------------------
     exclude_cols = [
         "user_id",
         "signup_time",
@@ -419,37 +498,34 @@ def prepare_modeling_data_fraud(
         "device_id",
         "ip_address",
         "ip_address_int",
-        "country",
-        target_col,
         "signup_day",
         "purchase_day",
         "time_of_day",
         "hour_of_day",
         "day_of_week",
     ]
-    feature_cols = [c for c in df.columns if c not in exclude_cols]
+    feature_cols = [c for c in X_train.columns if c not in exclude_cols]
 
-    X = df[feature_cols].copy()
-    y = df[target_col].copy()
-
-    object_cols = X.select_dtypes(include=["object", "category"]).columns
+    object_cols = X_train[feature_cols].select_dtypes(
+        include=["object", "category"]
+    ).columns
     if len(object_cols) > 0:
         print(f"Dropping non-numeric columns: {list(object_cols)}")
-        X = X.drop(columns=object_cols)
         feature_cols = [c for c in feature_cols if c not in object_cols]
 
-    X_train, X_test, y_train, y_test = stratified_split(X, y, test_size)
+    X_train = X_train[feature_cols].copy()
+    X_test = X_test[feature_cols].copy()
 
+    # ------------------------------------------------------------------
+    # Step 5: Scale numerical features (fit on train, transform both).
+    # ------------------------------------------------------------------
     numerical_cols = [
         c
         for c in [
             "purchase_value",
             "age",
             "time_since_signup",
-            "user_total_transactions",
             "device_total_transactions",
-            "user_historical_fraud_rate",
-            "device_historical_fraud_rate",
             "users_per_device",
             "devices_per_user",
             "signup_hour",
@@ -461,8 +537,14 @@ def prepare_modeling_data_fraud(
     ]
     X_train, X_test, scaler = scale_features(X_train, X_test, numerical_cols)
 
+    # ------------------------------------------------------------------
+    # Step 6: SMOTE (training data only).
+    # ------------------------------------------------------------------
     X_train_smote, y_train_smote = apply_smote(X_train, y_train, smote_ratio)
 
+    # ------------------------------------------------------------------
+    # Step 7: Save processed splits.
+    # ------------------------------------------------------------------
     _ensure_dir(DATA_PROCESSED)
     for name, obj in [
         ("X_train_fraud", X_train),

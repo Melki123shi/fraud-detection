@@ -16,6 +16,10 @@ from src.data_processing import (
     prepare_ip_ranges,
     add_ip_country,
     add_country_risk_features,
+    fit_country_risk,
+    apply_country_risk,
+    fit_fraud_rates,
+    apply_fraud_rates,
     get_fraud_by_country,
     categorize_hour,
     engineer_temporal_features,
@@ -402,8 +406,6 @@ class TestEngineerVelocityFeatures:
         expected = [
             "user_total_transactions",
             "device_total_transactions",
-            "user_historical_fraud_rate",
-            "device_historical_fraud_rate",
             "users_per_device",
             "devices_per_user",
         ]
@@ -414,11 +416,6 @@ class TestEngineerVelocityFeatures:
         result = engineer_velocity_features(sample_df)
         user1 = result[result["user_id"] == 1]
         assert (user1["user_total_transactions"] == 2).all()
-
-    def test_user_fraud_rate(self, sample_df):
-        result = engineer_velocity_features(sample_df)
-        user3 = result[result["user_id"] == 3]
-        assert user3["user_historical_fraud_rate"].iloc[0] == 1.0
 
     def test_rolling_windows(self, sample_df):
         result = engineer_velocity_features(sample_df)
@@ -434,6 +431,75 @@ class TestEngineerVelocityFeatures:
         })
         result = engineer_velocity_features(df)
         assert "user_transactions_24h" not in result.columns
+
+
+# ---------------------------------------------------------------------------
+# fit_fraud_rates / apply_fraud_rates
+# ---------------------------------------------------------------------------
+class TestFitApplyFraudRates:
+    def test_fit_returns_rates(self):
+        df = pd.DataFrame({
+            "user_id": [1, 1, 2, 2, 3],
+            "device_id": ["a", "a", "b", "b", "c"],
+            "class": [0, 1, 0, 0, 1],
+        })
+        info = fit_fraud_rates(df, user_col="user_id",
+                               device_col="device_id", target_col="class")
+        assert "user_rates" in info
+        assert "device_rates" in info
+        assert info["user_rates"][3] == 1.0
+
+    def test_apply_adds_columns(self):
+        df = pd.DataFrame({
+            "user_id": [1, 2, 3],
+            "device_id": ["a", "b", "c"],
+        })
+        info = {
+            "user_rates": pd.Series({1: 0.5, 2: 0.0, 3: 1.0}),
+            "device_rates": pd.Series({"a": 0.5, "b": 0.0, "c": 1.0}),
+        }
+        result = apply_fraud_rates(df, info)
+        assert "user_historical_fraud_rate" in result.columns
+        assert "device_historical_fraud_rate" in result.columns
+        assert result.loc[2, "user_historical_fraud_rate"] == 1.0
+
+    def test_apply_unseen_user_defaults_to_zero(self):
+        df = pd.DataFrame({
+            "user_id": [99],
+            "device_id": ["z"],
+        })
+        info = {
+            "user_rates": pd.Series({1: 0.5}),
+            "device_rates": pd.Series({"a": 0.5}),
+        }
+        result = apply_fraud_rates(df, info)
+        assert result.loc[0, "user_historical_fraud_rate"] == 0.0
+        assert result.loc[0, "device_historical_fraud_rate"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# fit_country_risk / apply_country_risk
+# ---------------------------------------------------------------------------
+class TestFitApplyCountryRisk:
+    def test_fit_returns_high_risk_list(self):
+        df = pd.DataFrame({
+            "country": ["US"] * 200 + ["NG"] * 150 + ["UK"] * 50,
+            "class": ([0] * 180 + [1] * 20 + [0] * 130 + [1] * 20
+                      + [0] * 48 + [1] * 2),
+        })
+        info = fit_country_risk(df, min_transactions=100, top_n=1)
+        assert "high_risk" in info
+        assert "NG" in info["high_risk"]
+
+    def test_apply_adds_columns(self):
+        info = {"high_risk": ["NG"], "significant": pd.DataFrame()}
+        df = pd.DataFrame({"country": ["NG", "US", "Unknown"]})
+        result = apply_country_risk(df, info)
+        assert "is_high_risk_country" in result.columns
+        assert "is_unknown_country" in result.columns
+        assert result.loc[0, "is_high_risk_country"] == 1
+        assert result.loc[1, "is_high_risk_country"] == 0
+        assert result.loc[2, "is_unknown_country"] == 1
 
 
 # ---------------------------------------------------------------------------
