@@ -49,14 +49,13 @@ def _get_explainer(model, X_train):
 
 def _compute_shap(model, X, explainer):
     shap_values = explainer.shap_values(np.array(X))
+    # LightGBM TreeExplainer returns a list [neg_class, pos_class]
     if isinstance(shap_values, list):
         shap_values = shap_values[1]
     shap_values = np.asarray(shap_values, dtype=np.float64)
+    # 3-D output: (n_samples, n_features, n_classes) — take positive class
     if shap_values.ndim == 3:
-        if shap_values.shape[0] == 1:
-            shap_values = shap_values[0]
-        else:
-            shap_values = shap_values[:, :, 1]
+        shap_values = shap_values[:, :, 1]
     return shap_values.astype(np.float64, copy=False)
 
 
@@ -70,6 +69,10 @@ def get_builtin_importance(model, feature_names: list) -> pd.DataFrame:
         importances = np.abs(model.coef_[0])
     else:
         raise ValueError("Model does not expose feature_importances_ or coef_")
+
+    total = importances.sum()
+    if total > 0:
+        importances = importances / total
 
     df = (
         pd.DataFrame(
@@ -176,20 +179,28 @@ def generate_shap_force_plots(
     optimal_threshold = float(thresholds_pr[best_idx])
     y_pred = (y_prob >= optimal_threshold).astype(int)
 
-    tp_idx = np.where(
-        (y_pred == 1) & (y_test.values == 1),
-    )[0]
-    fp_idx = np.where(
-        (y_pred == 1) & (y_test.values == 0),
-    )[0]
-    fn_idx = np.where(
-        (y_pred == 0) & (y_test.values == 1),
-    )[0]
+    tp_idx = np.where((y_pred == 1) & (y_test.values == 1))[0]
+    fp_idx = np.where((y_pred == 1) & (y_test.values == 0))[0]
+    fn_idx = np.where((y_pred == 0) & (y_test.values == 1))[0]
 
+    # If no FP at optimal threshold, lower threshold to find one
+    if len(fp_idx) == 0:
+        for fallback in np.arange(optimal_threshold - 0.05, 0.0, -0.05):
+            fp_idx = np.where(
+                ((y_prob >= fallback) & (y_test.values == 0))
+            )[0]
+            if len(fp_idx) > 0:
+                break
+
+    # Deduplicated list of sample positions needed
+    seen = set()
     needed_indices = []
     for idx_list in [tp_idx, fp_idx, fn_idx]:
         if len(idx_list) > 0:
-            needed_indices.append(idx_list[0])
+            i = idx_list[0]
+            if i not in seen:
+                seen.add(i)
+                needed_indices.append(i)
 
     if not needed_indices:
         print("No TP, FP, or FN samples found.")
@@ -202,27 +213,14 @@ def generate_shap_force_plots(
     shap_values = _compute_shap(model, X_subset, explainer)
 
     plots = {}
-    for label, idx_list in [
-        ("TP", tp_idx),
-        ("FP", fp_idx),
-        ("FN", fn_idx),
-    ]:
+    for label, idx_list in [("TP", tp_idx), ("FP", fp_idx), ("FN", fn_idx)]:
         if len(idx_list) == 0:
-            threshold_str = f"threshold {optimal_threshold:.4f}"
-            print(f"No {label} found in test set at {threshold_str}.")
+            print(f"No {label} found in test set at threshold {optimal_threshold:.4f}.")
             continue
         idx = idx_list[0]
         local_pos = needed_indices.index(idx)
         x = X_test.iloc[idx] if hasattr(X_test, "iloc") else X_test[idx]
-
-        shap_len = shap_values.shape[1] == len(feature_names)
-        if shap_values.ndim == 3:
-            shap_val = shap_values[1, local_pos, :]
-        elif shap_values.ndim == 2 and shap_len:
-            shap_val = shap_values[local_pos, :]
-        else:
-            shap_val = shap_values[local_pos]
-        shap_val = np.array(shap_val)
+        shap_val = np.array(shap_values[local_pos, :])
 
         plt.figure()
         expected = explainer.expected_value
@@ -290,9 +288,14 @@ def compare_importance_sources(
         on="feature",
         how="outer",
     ).fillna(0)
-    comparison["builtin_rank"] = range(1, len(comparison) + 1)
+    comparison["builtin_rank"] = (
+        comparison["importance"].rank(ascending=False).astype(int)
+    )
     comparison["shap_rank"] = (
         comparison["shap_importance"].rank(ascending=False).astype(int)
+    )
+    comparison = comparison.sort_values("importance", ascending=False).reset_index(
+        drop=True
     )
 
     fig, ax = plt.subplots(figsize=(10, 6))
