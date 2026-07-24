@@ -159,7 +159,7 @@ def get_param_grid(model_name: str, fast: bool = False) -> Dict:
             },
             "RandomForest": {
                 "n_estimators": [100, 200],
-                "max_depth": [8, 12],
+                "max_depth": [8, 12, 16],
                 "min_samples_split": [10],
             },
             "XGBoost": {
@@ -175,31 +175,51 @@ def get_param_grid(model_name: str, fast: bool = False) -> Dict:
         }.get(model_name, {})
 
     param_grids = {
-        "LogisticRegression": {
-            "C": [0.001, 0.01, 0.1, 1.0, 10.0, 100.0],
-            "penalty": ["l1", "l2", "elasticnet"],
-            "solver": ["saga"],
-            "l1_ratio": [0.3, 0.5, 0.7],
-        },
+        # Two clean sub-grids: l1_ratio is only valid for elasticnet so
+        # mixing it with l1/l2 produces invalid combinations that sklearn
+        # silently skips, wasting the n_iter budget.
+        # class_weight is tunable because SMOTE already rebalances the
+        # training set; keeping it fixed at "balanced" double-penalises the
+        # majority class and hurts test-set AUC-PR.
+        "LogisticRegression": [
+            {
+                "C": [0.01, 0.1, 1.0, 10.0, 100.0],
+                "penalty": ["l2"],
+                "solver": ["saga"],
+                "class_weight": [None, "balanced"],
+            },
+            {
+                "C": [0.01, 0.1, 1.0, 10.0],
+                "penalty": ["l1"],
+                "solver": ["saga"],
+                "class_weight": [None, "balanced"],
+            },
+        ],
+        # n_estimators floor is 200 (same as default) so the search never
+        # regresses to an underpowered model.
+        # class_weight tunable for the same SMOTE reason above.
         "RandomForest": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [8, 12, 16, None],
+            "n_estimators": [200, 300, 400],
+            "max_depth": [8, 12, 16],
             "min_samples_split": [5, 10, 20],
             "min_samples_leaf": [2, 5, 10],
-            "max_features": ["sqrt", "log2", None],
+            "max_features": ["sqrt", "log2"],
+            "class_weight": [None, "balanced"],
         },
+        # learning_rate lower bound is 0.05 to avoid underfitting with a
+        # capped n_estimators budget.
         "XGBoost": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [3, 5, 7, 9],
-            "learning_rate": [0.01, 0.05, 0.1, 0.2],
+            "n_estimators": [200, 300, 400],
+            "max_depth": [3, 5, 7],
+            "learning_rate": [0.05, 0.1, 0.2],
             "subsample": [0.7, 0.8, 0.9],
             "colsample_bytree": [0.7, 0.8, 0.9],
             "gamma": [0, 0.1, 0.2],
         },
         "LightGBM": {
-            "n_estimators": [100, 200, 300],
-            "max_depth": [3, 5, 7, 9],
-            "learning_rate": [0.01, 0.05, 0.1, 0.2],
+            "n_estimators": [200, 300, 400],
+            "max_depth": [3, 5, 7],
+            "learning_rate": [0.05, 0.1, 0.2],
             "subsample": [0.7, 0.8, 0.9],
             "colsample_bytree": [0.7, 0.8, 0.9],
             "reg_alpha": [0, 0.1, 0.5],
@@ -280,6 +300,10 @@ def tune_hyperparameters(
         shuffle=True,
         random_state=random_state,
     )
+    # refit=False: we only need the best params from CV. The caller refits
+    # the model on SMOTE data after this returns, so letting
+    # RandomizedSearchCV refit on the original data here would be wasted
+    # work and would return a model trained on the wrong distribution.
     search = RandomizedSearchCV(
         estimator=model,
         param_distributions=param_grid,
@@ -290,15 +314,21 @@ def tune_hyperparameters(
         verbose=0,
         random_state=random_state,
         return_train_score=False,
+        refit=False,
     )
 
     print(f"Fitting {model_name} with hyperparameter grid...")
     search.fit(X_tune, y_tune)
 
+    # Reconstruct the best estimator with the found params so the caller
+    # can call .fit() on it with SMOTE data.
+    best_estimator = model_factories[model_name]()
+    best_estimator.set_params(**search.best_params_)
+
     result = {
         "best_params": search.best_params_,
         "best_score": round(float(search.best_score_), 4),
-        "best_estimator": search.best_estimator_,
+        "best_estimator": best_estimator,
         "tuned": True,
         "cv_results": search.cv_results_,
     }
@@ -568,12 +598,12 @@ def cross_validate_model(model, X, y, cv=5) -> Dict:
         n_jobs=-1,
     )
     return {
-        metric: {
+        metric.replace("test_", ""): {
             "mean": round(float(scores.mean()), 4),
             "std": round(float(scores.std()), 4),
         }
         for metric, scores in cv_results.items()
-        if metric in scoring
+        if metric.startswith("test_")
     }
 
 
@@ -584,7 +614,7 @@ def train_all_models(
     dataset="fraud",
     use_smote=True,
     do_tune=False,
-    n_iter=20,
+    n_iter=100,
 ):
     """
     This function trains multiple models on the specified dataset,
@@ -598,7 +628,7 @@ def train_all_models(
     - do_tune: Whether to perform hyperparameter tuning
       using RandomizedSearchCV (default is False).
     - n_iter: Number of parameter settings sampled for RandomizedSearchCV
-      (default is 20, only used if do_tune is True).
+      (default is 100, only used if do_tune is True).
 
     Returns:
     A dictionary containing the results of model evaluations,
@@ -668,19 +698,28 @@ def train_all_models(
             else:
                 effective_n_iter = n_iter
             sample_size = 50000 if dataset == "credit" else None
+            # Tune on original (non-SMOTE) data so CV folds reflect the real
+            # class distribution. Applying SMOTE before the search causes
+            # synthetic samples to leak into validation folds, inflating CV
+            # scores and selecting hyperparameters that overfit the synthetic
+            # distribution — which is why tuned models score worse on the
+            # real test set than default ones.
             tune_result = tune_hyperparameters(
                 name,
-                train_X,
-                train_y,
+                X_train,
+                y_train,
                 n_iter=effective_n_iter,
-                cv=3,
+                cv=5,
                 random_state=42,
                 sample_size=sample_size,
             )
             if tune_result["tuned"]:
+                # Re-fit the best estimator on SMOTE data now that
+                # hyperparameters have been selected on clean CV folds.
                 model = tune_result["best_estimator"]
+                model.fit(train_X, train_y)
                 print(f"  Tuned best params: {tune_result['best_params']}")
-                print(f"  Tuned CV AUC-PR: {tune_result['best_score']}")
+                print(f"  Tuned CV AUC-PR (on original data): {tune_result['best_score']}")
             else:
                 model.fit(train_X, train_y)
         else:
@@ -724,8 +763,9 @@ def train_all_models(
         json.dump(json_results, f, indent=2)
     print(f"Results saved to {results_path}")
 
-    # Save best model by F1
-    best = max(results, key=lambda r: r["evaluation"]["f1_score"])
+    # Save best model by AUC-PR (primary metric for imbalanced data)
+    best = max(results, key=lambda r: r["evaluation"]["auc_pr"])
+    print(f"best one {'='*10}")
     best_name = best["name"]
     best_model = trained_models[best_name]
     model_path = MODELS_DIR / f"best_model_{dataset_name}.pkl"
@@ -775,7 +815,7 @@ def compare_models(results: List[Dict]) -> pd.DataFrame:
             }
         )
     df = pd.DataFrame(rows)
-    return df.sort_values("F1-Score", ascending=False).reset_index(drop=True)
+    return df.sort_values("AUC-PR", ascending=False).reset_index(drop=True)
 
 
 def get_best_model(dataset="fraud"):
@@ -818,10 +858,14 @@ def get_feature_importance(
     if hasattr(model, "feature_importances_"):
         importances = model.feature_importances_
     elif hasattr(model, "coef_"):
-        importances = model.coef_[0]
+        importances = np.abs(model.coef_[0])
     else:
         msg = "Model does not expose feature_importances_ or coef_."
         raise ValueError(msg)
+
+    total = importances.sum()
+    if total > 0:
+        importances = importances / total
 
     df = (
         pd.DataFrame(
